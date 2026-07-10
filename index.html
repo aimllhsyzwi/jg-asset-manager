@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JG Asset Manager</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://unpkg.com/@zxing/library@latest"></script>
+</head>
+
+<body class="bg-gray-50 text-gray-900 font-sans antialiased">
+
+    <script>
+
+        const GOOGLE_API_URL = "https://script.google.com/a/macros/jayagrocer.com/s/AKfycbxzY_r1hKDChSU2J03r2A2xPV9TNuhMiZEBnjeF5uiAmGf7datj2VaqOlgOdTXmv0wc/exec";
+
+        // Configuration-driven profiles schema matrix
+        const profiles = {
+            "Sunmi V3": ["Barcode", "IMEI 1", "IMEI 2", "Serial Number", "SID"],
+            "Android Phone": ["Barcode", "IMEI 1", "Serial Number"],
+            "Newland Scanner": ["Barcode", "Serial Number"]
+        };
+
+        let currentProfileFields = [];
+        let currentFieldIndex = 0;
+        let currentDevicePayload = {};
+        let sessionSuccessCount = 0;
+        let codeReader = null;
+        let isProcessingScan = false;
+
+        function initiateWorkflow(profileName) {
+            if (!profileName) return;
+            currentProfileFields = profiles[profileName];
+            currentFieldIndex = 0;
+            currentDevicePayload = { "Model": profileName };
+
+            buildMetadataGrid();
+            document.getElementById("workflow-card").classList.remove("hidden");
+            document.getElementById("recent-scans-box").classList.remove("hidden");
+
+            advanceWorkflowStep();
+        }
+
+        function buildMetadataGrid() {
+            const grid = document.getElementById("meta-display-grid");
+            grid.innerHTML = "";
+            grid.classList.remove("hidden");
+            currentProfileFields.forEach((field, idx) => {
+                grid.innerHTML += `
+          <div class="flex justify-between p-2 rounded bg-white border border-gray-100 shadow-2xs font-mono text-xs">
+            <span class="text-gray-400">${idx + 1}. ${field}:</span>
+            <span id="meta-${field.replace(/\s+/g, '-')}" class="font-bold text-gray-400">Waiting...</span>
+          </div>`;
+            });
+        }
+
+        function advanceWorkflowStep() {
+            if (currentFieldIndex < currentProfileFields.length) {
+                const targetField = currentProfileFields[currentFieldIndex];
+                document.getElementById("current-field-prompt").textContent = targetField;
+                document.getElementById("barcode-input").placeholder = `Scan or type ${targetField}...`;
+                isProcessingScan = false;
+            } else {
+                stopCamera();
+                submitToGoogleSheets();
+            }
+        }
+
+        function processInput(value) {
+            if (isProcessingScan) return;
+            isProcessingScan = true;
+
+            const activeField = currentProfileFields[currentFieldIndex];
+            currentDevicePayload[activeField] = value;
+
+            // Update targeted profile indicator view cell item
+            const targetId = `meta-${activeField.replace(/\s+/g, '-')}`;
+            document.getElementById(targetId).textContent = value;
+            document.getElementById(targetId).className = "font-bold text-emerald-600 break-all pl-4 text-right";
+
+            if (navigator.vibrate) navigator.vibrate(60); // Soft execution feedback pulse
+
+            currentFieldIndex++;
+            setTimeout(advanceWorkflowStep, 250);
+        }
+
+        function toggleCamera() {
+            const videoContainer = document.getElementById("video-container");
+            const btn = document.getElementById("btn-camera");
+
+            if (codeReader) {
+                stopCamera();
+            } else {
+                videoContainer.classList.remove("hidden");
+                btn.textContent = "🛑 Close Camera Scanner";
+                btn.className = "w-full bg-red-600 text-white py-3.5 rounded-xl font-bold shadow-xs transition";
+
+                codeReader = new ZXing.BrowserMultiFormatReader();
+                // Force rear tracking lenses explicitly
+                codeReader.decodeFromConstraints({ video: { facingMode: "environment" } }, 'interactive-video', (result, err) => {
+                    if (result && !isProcessingScan) {
+                        processInput(result.text.trim());
+                    }
+                });
+            }
+        }
+
+        function stopCamera() {
+            if (codeReader) {
+                codeReader.reset();
+                codeReader = null;
+                document.getElementById("video-container").classList.add("hidden");
+                const btn = document.getElementById("btn-camera");
+                btn.textContent = "📷 Open Camera Scanner";
+                btn.className = "w-full bg-emerald-600 text-white py-3.5 rounded-xl font-bold shadow-xs transition";
+            }
+        }
+
+        function handleUndo() {
+            if (currentFieldIndex > 0) {
+                currentFieldIndex--;
+                const field = currentProfileFields[currentFieldIndex];
+                delete currentDevicePayload[field];
+
+                const targetId = `meta-${field.replace(/\s+/g, '-')}`;
+                document.getElementById(targetId).textContent = "Waiting...";
+                document.getElementById(targetId).className = "font-bold text-gray-400";
+                advanceWorkflowStep();
+            }
+        }
+
+        async function submitToGoogleSheets() {
+            document.getElementById("current-field-prompt").textContent = "Saving...";
+
+            try {
+                // Dispatch data using standard HTTP POST requests directly to your API endpoint
+                const response = await fetch(GOOGLE_API_URL, {
+                    method: "POST",
+                    body: JSON.stringify(currentDevicePayload)
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    sessionSuccessCount++;
+                    document.getElementById("progress-text").textContent = `${sessionSuccessCount} Devices`;
+
+                    const log = document.getElementById("history-list");
+                    log.innerHTML = `<div class="py-2 text-gray-600 flex justify-between font-mono text-xs border-b border-gray-50"><span>✅ <b>${result.assetId}</b> [${currentDevicePayload["Model"]}]</span></div>` + log.innerHTML;
+
+                    // Re-trigger dynamic clean execution loops
+                    initiateWorkflow(document.getElementById("profile-selector").value);
+                } else {
+                    alert(result.message);
+                    handleUndo();
+                }
+            } catch (err) {
+                alert("Network Error Connecting to Spreadsheet Endpoint API.");
+                handleUndo();
+            }
+        }
+
+        document.addEventListener("DOMContentLoaded", () => {
+            document.getElementById("profile-selector").addEventListener("change", (e) => initiateWorkflow(e.target.value));
+            document.getElementById("btn-camera").addEventListener("click", toggleCamera);
+            document.getElementById("btn-undo").addEventListener("click", handleUndo);
+            document.getElementById("btn-reset").addEventListener("click", () => initiateWorkflow(document.getElementById("profile-selector").value));
+
+            document.getElementById("barcode-input").addEventListener("keydown", (e) => {
+                if (e.key === "Enter" && e.target.value.trim() !== "") {
+                    processInput(e.target.value.trim());
+                    e.target.value = "";
+                }
+            });
+        });
+    </script>
+
+    <nav class="bg-emerald-600 text-white shadow-md p-4">
+        <div class="max-w-md mx-auto flex justify-between items-center">
+            <h1 class="font-bold text-lg">JG Asset Manager</h1>
+            <span class="text-xs bg-emerald-700 px-2 py-1 rounded">v2.0 - VS Code Edition</span>
+        </div>
+    </nav>
+
+    <main class="max-w-md mx-auto p-4 space-y-6">
+
+        <div class="bg-white p-5 rounded-2xl shadow-xs border border-gray-100">
+            <label class="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">Select Device
+                Profile</label>
+            <select id="profile-selector"
+                class="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500">
+                <option value="" disabled selected>— Choose Profile —</option>
+                <option value="Sunmi V3">Sunmi V3</option>
+                <option value="Android Phone">Android Phone</option>
+                <option value="Newland Scanner">Newland Scanner</option>
+            </select>
+        </div>
+
+        <div id="workflow-card"
+            class="bg-white p-6 rounded-2xl shadow-xs border border-gray-100 hidden text-center space-y-4">
+            <div class="flex justify-between items-center text-sm">
+                <span class="text-gray-500 font-medium">Session Progress</span>
+                <span id="progress-text" class="text-emerald-600 font-bold">0 Devices</span>
+            </div>
+            <div>
+                <p class="text-xs uppercase tracking-widest text-gray-400 font-bold">Waiting For Scan</p>
+                <h2 id="current-field-prompt" class="text-3xl font-black text-emerald-600 mt-1">—</h2>
+            </div>
+
+            <button id="btn-camera"
+                class="w-full bg-emerald-600 text-white py-3.5 rounded-xl font-bold shadow-xs transition">
+                📷 Open Camera Scanner
+            </button>
+
+            <div id="video-container" class="relative w-full aspect-video bg-black rounded-xl overflow-hidden hidden">
+                <video id="interactive-video" class="w-full h-full object-cover"></video>
+                <div
+                    class="absolute inset-0 border-4 border-dashed border-emerald-500/40 m-6 rounded pointer-events-none">
+                </div>
+            </div>
+
+            <div id="meta-display-grid"
+                class="bg-gray-50 rounded-xl p-3 text-left space-y-1.5 border border-gray-100 hidden"></div>
+
+            <input type="text" id="barcode-input" placeholder="Or type manually..."
+                class="w-full p-3 bg-gray-50 border rounded-xl text-center font-mono outline-none focus:border-emerald-500">
+
+            <div class="flex gap-2">
+                <button id="btn-undo"
+                    class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 py-3 rounded-xl text-sm font-medium transition">↩️
+                    Undo Field</button>
+                <button id="btn-reset"
+                    class="flex-1 bg-red-50 hover:bg-red-100 text-red-600 py-3 rounded-xl text-sm font-medium transition">🛑
+                    Reset</button>
+            </div>
+        </div>
+
+        <div id="recent-scans-box" class="bg-white p-5 rounded-2xl shadow-xs border border-gray-100 hidden">
+            <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Live Session Ingests</h3>
+            <div id="history-list" class="divide-y divide-gray-50"></div>
+        </div>
+    </main>
+
+</body>
+
+</html>
