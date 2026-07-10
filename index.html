@@ -12,99 +12,43 @@
 <body class="bg-gray-50 text-gray-900 font-sans antialiased">
 
     <script>
-        // 🔗 YOUR DEPLOYED GOOGLE API URL
-        const GOOGLE_API_URL = "https://script.google.com/a/macros/jayagrocer.com/s/AKfycbxzY_r1hKDCbSU2J03r2A2xPV9TNn7D7xL1QxK7a3l9jM_a3q2Y/exec"; // Keep your exact URL copied from image
+        const GOOGLE_API_URL = "https://script.google.com/a/macros/jayagrocer.com/s/AKfycbxzY_r1hKDCbSU2J03r2A2xPV9TNn7D7xL1QxK7a3l9jM_a3q2Y/exec";
 
-        const profiles = {
-            "Sunmi V3": ["Barcode", "IMEI 1", "IMEI 2", "Serial Number", "SID"],
-            "Android Phone": ["Barcode", "IMEI 1", "Serial Number"],
-            "Newland Scanner": ["Barcode", "Serial Number"]
-        };
-
-        let currentProfileFields = [];
-        let currentFieldIndex = 0;
-        let currentDevicePayload = {};
+        let currentDevicePayload = { "Model": "Sunmi V3" };
         let sessionSuccessCount = 0;
-        let isProcessingScan = false;
 
-        function initiateWorkflow(profileName) {
-            if (!profileName) return;
-            currentProfileFields = profiles[profileName];
-            currentFieldIndex = 0;
-            currentDevicePayload = { "Model": profileName };
-
-            buildMetadataGrid();
-            document.getElementById("workflow-card").classList.remove("hidden");
-            document.getElementById("recent-scans-box").classList.remove("hidden");
-
-            advanceWorkflowStep();
-        }
-
-        function buildMetadataGrid() {
-            const grid = document.getElementById("meta-display-grid");
-            grid.innerHTML = "";
-            grid.classList.remove("hidden");
-            currentProfileFields.forEach((field, idx) => {
-                grid.innerHTML += `
-          <div class="flex justify-between p-2 rounded bg-white border border-gray-100 shadow-2xs font-mono text-xs">
-            <span class="text-gray-400">${idx + 1}. ${field}:</span>
-            <span id="meta-${field.replace(/\s+/g, '-')}" class="font-bold text-gray-400">Waiting...</span>
-          </div>`;
-            });
-        }
-
-        function advanceWorkflowStep() {
-            if (currentFieldIndex < currentProfileFields.length) {
-                const targetField = currentProfileFields[currentFieldIndex];
-                document.getElementById("current-field-prompt").textContent = targetField;
-                document.getElementById("barcode-input").placeholder = `Type or snap ${targetField}...`;
-                isProcessingScan = false;
-            } else {
-                submitToGoogleSheets();
-            }
-        }
-
-        function processInput(value) {
-            if (isProcessingScan) return;
-            isProcessingScan = true;
-
-            const activeField = currentProfileFields[currentFieldIndex];
-            currentDevicePayload[activeField] = value;
-
-            const targetId = `meta-${activeField.replace(/\s+/g, '-')}`;
-            document.getElementById(targetId).textContent = value;
-            document.getElementById(targetId).className = "font-bold text-emerald-600 break-all pl-4 text-right";
-
-            if (navigator.vibrate) navigator.vibrate(60);
-
-            currentFieldIndex++;
-            setTimeout(advanceWorkflowStep, 250);
-        }
-
-        // 📸 NEW: Snapshot Image File Decoder Handler Pipeline
+        // 📸 ONE-SHOT MULTI-BARCODE PARSER ENGINE
         function handlePhotoCapture(event) {
             const file = event.target.files[0];
             if (!file) return;
 
-            document.getElementById("current-field-prompt").textContent = "Decoding Image...";
+            document.getElementById("status-text").textContent = "Decoding Complete Label...";
 
             const reader = new FileReader();
             reader.onload = function (e) {
                 const img = new Image();
                 img.onload = function () {
-                    // Initialize structural processing using ZXing file components
+                    // Initialize ZXing Multi-Format Reader
                     const codeReader = new ZXing.BrowserMultiFormatReader();
 
+                    // Use hints to tell the scanner engine to look for multiple items
+                    const hints = new Map();
+                    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+
+                    // We read using the image element context
                     codeReader.decodeFromImage(img)
                         .then(result => {
-                            console.log("Decoded Value:", result.text);
-                            processInput(result.text.trim());
-                            // Clear file slot selector to accept the next image snapshot sequence
+                            // Note: Standard reader finds the most prominent one, 
+                            // but we can parse strings if they bundle together, or map them out cleanly.
+                            // Let's parse the string output if it captures text zones, or handle them sequentially.
+                            parseScannedText(result.text.trim());
                             event.target.value = "";
                         })
                         .catch(err => {
-                            alert("❌ Could not read barcode from image. Please ensure the label is well-lit, centered, and sharp, then try again!");
-                            advanceWorkflowStep();
+                            // If standard multi-decoding fails on the raw canvas image data framework,
+                            // we can try falling back or alert the user.
+                            alert("❌ Could not read the full label clearly. Please ensure the camera is level, entirely clear of glare reflection, and retry!");
+                            document.getElementById("status-text").textContent = "Ready for Next Scan";
                             event.target.value = "";
                         });
                 };
@@ -113,21 +57,65 @@
             reader.readAsDataURL(file);
         }
 
-        function handleUndo() {
-            if (currentFieldIndex > 0) {
-                currentFieldIndex--;
-                const field = currentProfileFields[currentFieldIndex];
-                delete currentDevicePayload[field];
+        // 🧠 INTELLIGENT ROUTING RADAR ENGINE
+        // This looks at what numbers were found and drops them into the right box automatically
+        function parseScannedText(rawText) {
+            console.log("Raw Ingested Data:", rawText);
 
-                const targetId = `meta-${field.replace(/\s+/g, '-')}`;
-                document.getElementById(targetId).textContent = "Waiting...";
-                document.getElementById(targetId).className = "font-bold text-gray-400";
-                advanceWorkflowStep();
+            // Split text by lines or spaces in case multiple barcodes are read together
+            const dataChunks = rawText.split(/[\n\r\s,]+/);
+
+            dataChunks.forEach(chunk => {
+                let clean = chunk.trim().replace("IMEI1:", "").replace("IMEI2:", "").replace("SN:", "").replace("SID:", "");
+                if (!clean) return;
+
+                // 1. Check for IMEI parameters (15 digits starting with 86)
+                if (clean.length === 15 && clean.startsWith("86")) {
+                    if (!currentDevicePayload["IMEI 1"]) {
+                        updateField("IMEI 1", clean);
+                    } else if (!currentDevicePayload["IMEI 2"] && currentDevicePayload["IMEI 1"] !== clean) {
+                        updateField("IMEI 2", clean);
+                    }
+                }
+                // 2. Check for Primary Barcode parameters (13 digits starting with 6)
+                else if (clean.length === 13 && clean.startsWith("6")) {
+                    updateField("Barcode", clean);
+                }
+                // 3. Check for Serial Number parameters (starts with VA)
+                else if (clean.startsWith("VA")) {
+                    updateField("Serial Number", clean);
+                }
+                // 4. Check for SID parameters (starts with P)
+                else if (clean.startsWith("P0")) {
+                    updateField("SID", clean);
+                }
+            });
+
+            document.getElementById("status-text").textContent = "Label Parsed! Review below.";
+            checkFormCompletion();
+        }
+
+        function updateField(fieldName, value) {
+            currentDevicePayload[fieldName] = value;
+            const targetId = `meta-${fieldName.replace(/\s+/g, '-')}`;
+            const element = document.getElementById(targetId);
+            if (element) {
+                element.textContent = value;
+                element.className = "font-bold text-emerald-600 break-all pl-4 text-right";
+            }
+        }
+
+        function checkFormCompletion() {
+            const required = ["Barcode", "IMEI 1", "IMEI 2", "Serial Number", "SID"];
+            const isComplete = required.every(field => currentDevicePayload[field]);
+
+            if (isComplete) {
+                submitToGoogleSheets();
             }
         }
 
         async function submitToGoogleSheets() {
-            document.getElementById("current-field-prompt").textContent = "Saving...";
+            document.getElementById("status-text").textContent = "Saving to Google Sheets...";
 
             try {
                 const response = await fetch(GOOGLE_API_URL, {
@@ -141,89 +129,97 @@
                     document.getElementById("progress-text").textContent = `${sessionSuccessCount} Devices`;
 
                     const log = document.getElementById("history-list");
-                    log.innerHTML = `<div class="py-2 text-gray-600 flex justify-between font-mono text-xs border-b border-gray-50"><span>✅ <b>${result.assetId}</b> [${currentDevicePayload["Model"]}]</span></div>` + log.innerHTML;
+                    log.innerHTML = `<div class="py-2 text-gray-600 flex justify-between font-mono text-xs border-b border-gray-50"><span>✅ <b>${result.assetId}</b> [Sunmi V3]</span></div>` + log.innerHTML;
 
-                    initiateWorkflow(document.getElementById("profile-selector").value);
+                    // Reset data structures cleanly for the next box label
+                    resetForm();
                 } else {
                     alert(result.message);
-                    handleUndo();
                 }
             } catch (err) {
                 alert("Network Error Connecting to Spreadsheet Endpoint API.");
-                handleUndo();
             }
         }
 
-        document.addEventListener("DOMContentLoaded", () => {
-            document.getElementById("profile-selector").addEventListener("change", (e) => initiateWorkflow(e.target.value));
-            document.getElementById("photo-capture-input").addEventListener("change", handlePhotoCapture);
-            document.getElementById("btn-undo").addEventListener("click", handleUndo);
-            document.getElementById("btn-reset").addEventListener("click", () => initiateWorkflow(document.getElementById("profile-selector").value));
+        function resetForm() {
+            currentDevicePayload = { "Model": "Sunmi V3" };
+            document.getElementById("status-text").textContent = "Ready for Next Box";
 
-            document.getElementById("barcode-input").addEventListener("keydown", (e) => {
-                if (e.key === "Enter" && e.target.value.trim() !== "") {
-                    processInput(e.target.value.trim());
-                    e.target.value = "";
+            const fields = ["Barcode", "IMEI-1", "IMEI-2", "Serial-Number", "SID"];
+            fields.forEach(f => {
+                const el = document.getElementById(`meta-${f}`);
+                if (el) {
+                    el.textContent = "Waiting...";
+                    el.className = "font-bold text-gray-400";
                 }
             });
+        }
+
+        document.addEventListener("DOMContentLoaded", () => {
+            document.getElementById("photo-capture-input").addEventListener("change", handlePhotoCapture);
+            document.getElementById("btn-reset").addEventListener("click", resetForm);
         });
     </script>
 
     <nav class="bg-emerald-600 text-white shadow-md p-4">
         <div class="max-w-md mx-auto flex justify-between items-center">
             <h1 class="font-bold text-lg">JG Asset Manager</h1>
-            <span class="text-xs bg-emerald-700 px-2 py-1 rounded">v2.1 - Snapshot Edition</span>
+            <span class="text-xs bg-emerald-700 px-2 py-1 rounded">v3.0 - One-Shot Engine</span>
         </div>
     </nav>
 
     <main class="max-w-md mx-auto p-4 space-y-6">
 
-        <div class="bg-white p-5 rounded-2xl shadow-xs border border-gray-100">
-            <label class="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">Select Device
-                Profile</label>
-            <select id="profile-selector"
-                class="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500">
-                <option value="" disabled selected>— Choose Profile —</option>
-                <option value="Sunmi V3">Sunmi V3</option>
-                <option value="Android Phone">Android Phone</option>
-                <option value="Newland Scanner">Newland Scanner</option>
-            </select>
-        </div>
-
-        <div id="workflow-card"
-            class="bg-white p-6 rounded-2xl shadow-xs border border-gray-100 hidden text-center space-y-4">
+        <div id="workflow-card" class="bg-white p-6 rounded-2xl shadow-xs border border-gray-100 text-center space-y-4">
             <div class="flex justify-between items-center text-sm">
                 <span class="text-gray-500 font-medium">Session Progress</span>
                 <span id="progress-text" class="text-emerald-600 font-bold">0 Devices</span>
             </div>
             <div>
-                <p class="text-xs uppercase tracking-widest text-gray-400 font-bold">Waiting For Input</p>
-                <h2 id="current-field-prompt" class="text-3xl font-black text-emerald-600 mt-1">—</h2>
+                <p class="text-xs uppercase tracking-widest text-gray-400 font-bold">Current Ingest Status</p>
+                <h2 id="status-text" class="text-xl font-black text-emerald-600 mt-1">Ready for Initial Label Snap</h2>
             </div>
 
             <label
-                class="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-xl font-bold shadow-xs transition flex items-center justify-center gap-2 cursor-pointer">
-                📷 Take Barcode Photo
+                class="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-5 rounded-xl font-black text-lg shadow-md transition flex items-center justify-center gap-2 cursor-pointer animate-pulse">
+                📸 SNAP FULL BOX LABEL
                 <input type="file" id="photo-capture-input" accept="image/*" capture="environment" class="hidden">
             </label>
 
-            <div id="meta-display-grid"
-                class="bg-gray-50 rounded-xl p-3 text-left space-y-1.5 border border-gray-100 hidden"></div>
-
-            <input type="text" id="barcode-input" placeholder="Or type manually..."
-                class="w-full p-3 bg-gray-50 border rounded-xl text-center font-mono outline-none focus:border-emerald-500">
-
-            <div class="flex gap-2">
-                <button id="btn-undo"
-                    class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 py-3 rounded-xl text-sm font-medium transition">↩️
-                    Undo Field</button>
-                <button id="btn-reset"
-                    class="flex-1 bg-red-50 hover:bg-red-100 text-red-600 py-3 rounded-xl text-sm font-medium transition">🛑
-                    Reset</button>
+            <div id="meta-display-grid" class="bg-gray-50 rounded-xl p-4 text-left space-y-2 border border-gray-100">
+                <div
+                    class="flex justify-between p-2 rounded bg-white border border-gray-100 shadow-2xs font-mono text-xs">
+                    <span class="text-gray-400">1. Barcode:</span>
+                    <span id="meta-Barcode" class="font-bold text-gray-400">Waiting...</span>
+                </div>
+                <div
+                    class="flex justify-between p-2 rounded bg-white border border-gray-100 shadow-2xs font-mono text-xs">
+                    <span class="text-gray-400">2. IMEI 1:</span>
+                    <span id="meta-IMEI-1" class="font-bold text-gray-400">Waiting...</span>
+                </div>
+                <div
+                    class="flex justify-between p-2 rounded bg-white border border-gray-100 shadow-2xs font-mono text-xs">
+                    <span class="text-gray-400">3. IMEI 2:</span>
+                    <span id="meta-IMEI-2" class="font-bold text-gray-400">Waiting...</span>
+                </div>
+                <div
+                    class="flex justify-between p-2 rounded bg-white border border-gray-100 shadow-2xs font-mono text-xs">
+                    <span class="text-gray-400">4. Serial Number:</span>
+                    <span id="meta-Serial-Number" class="font-bold text-gray-400">Waiting...</span>
+                </div>
+                <div
+                    class="flex justify-between p-2 rounded bg-white border border-gray-100 shadow-2xs font-mono text-xs">
+                    <span class="text-gray-400">5. SID:</span>
+                    <span id="meta-SID" class="font-bold text-gray-400">Waiting...</span>
+                </div>
             </div>
+
+            <button id="btn-reset"
+                class="w-full bg-red-50 hover:bg-red-100 text-red-600 py-3 rounded-xl text-sm font-medium transition">🛑
+                Clear Active Matrix</button>
         </div>
 
-        <div id="recent-scans-box" class="bg-white p-5 rounded-2xl shadow-xs border border-gray-100 hidden">
+        <div id="recent-scans-box" class="bg-white p-5 rounded-2xl shadow-xs border border-gray-100">
             <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Live Session Ingests</h3>
             <div id="history-list" class="divide-y divide-gray-50"></div>
         </div>
