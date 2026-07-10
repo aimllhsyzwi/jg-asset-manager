@@ -6,116 +6,103 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>JG Asset Manager</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-    <script src="https://unpkg.com/@zxing/library@latest"></script>
 </head>
 
 <body class="bg-gray-50 text-gray-900 font-sans antialiased">
 
     <script>
+        // 🔗 YOUR DEPLOYED GOOGLE API URL
         const GOOGLE_API_URL = "https://script.google.com/a/macros/jayagrocer.com/s/AKfycbxzY_r1hKDCbSU2J03r2A2xPV9TNn7D7xL1QxK7a3l9jM_a3q2Y/exec";
 
-        let currentDevicePayload = { "Model": "Sunmi V3" };
+        const profiles = {
+            "Sunmi V3": ["Barcode", "IMEI 1", "IMEI 2", "Serial Number", "SID"],
+            "Android Phone": ["Barcode", "IMEI 1", "Serial Number"],
+            "Newland Scanner": ["Barcode", "Serial Number"]
+        };
+
+        let currentProfileFields = [];
+        let currentDevicePayload = {};
         let sessionSuccessCount = 0;
 
-        // 📸 ONE-SHOT MULTI-BARCODE PARSER ENGINE
-        function handlePhotoCapture(event) {
-            const file = event.target.files[0];
-            if (!file) return;
+        function initiateWorkflow(profileName) {
+            if (!profileName) return;
+            currentProfileFields = profiles[profileName];
+            currentDevicePayload = { "Model": profileName };
 
-            document.getElementById("status-text").textContent = "Decoding Complete Label...";
+            buildDynamicFormFields();
+            document.getElementById("workflow-card").classList.remove("hidden");
+            document.getElementById("recent-scans-box").classList.remove("hidden");
 
-            const reader = new FileReader();
-            reader.onload = function (e) {
-                const img = new Image();
-                img.onload = function () {
-                    // Initialize ZXing Multi-Format Reader
-                    const codeReader = new ZXing.BrowserMultiFormatReader();
-
-                    // Use hints to tell the scanner engine to look for multiple items
-                    const hints = new Map();
-                    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-
-                    // We read using the image element context
-                    codeReader.decodeFromImage(img)
-                        .then(result => {
-                            // Note: Standard reader finds the most prominent one, 
-                            // but we can parse strings if they bundle together, or map them out cleanly.
-                            // Let's parse the string output if it captures text zones, or handle them sequentially.
-                            parseScannedText(result.text.trim());
-                            event.target.value = "";
-                        })
-                        .catch(err => {
-                            // If standard multi-decoding fails on the raw canvas image data framework,
-                            // we can try falling back or alert the user.
-                            alert("❌ Could not read the full label clearly. Please ensure the camera is level, entirely clear of glare reflection, and retry!");
-                            document.getElementById("status-text").textContent = "Ready for Next Scan";
-                            event.target.value = "";
-                        });
-                };
-                img.src = e.target.result;
-            };
-            reader.readAsDataURL(file);
+            // Auto focus the very first text box instantly
+            setTimeout(() => focusFieldByIndex(0), 300);
         }
 
-        // 🧠 INTELLIGENT ROUTING RADAR ENGINE
-        // This looks at what numbers were found and drops them into the right box automatically
-        function parseScannedText(rawText) {
-            console.log("Raw Ingested Data:", rawText);
+        function buildDynamicFormFields() {
+            const container = document.getElementById("dynamic-fields-container");
+            container.innerHTML = "";
 
-            // Split text by lines or spaces in case multiple barcodes are read together
-            const dataChunks = rawText.split(/[\n\r\s,]+/);
-
-            dataChunks.forEach(chunk => {
-                let clean = chunk.trim().replace("IMEI1:", "").replace("IMEI2:", "").replace("SN:", "").replace("SID:", "");
-                if (!clean) return;
-
-                // 1. Check for IMEI parameters (15 digits starting with 86)
-                if (clean.length === 15 && clean.startsWith("86")) {
-                    if (!currentDevicePayload["IMEI 1"]) {
-                        updateField("IMEI 1", clean);
-                    } else if (!currentDevicePayload["IMEI 2"] && currentDevicePayload["IMEI 1"] !== clean) {
-                        updateField("IMEI 2", clean);
-                    }
-                }
-                // 2. Check for Primary Barcode parameters (13 digits starting with 6)
-                else if (clean.length === 13 && clean.startsWith("6")) {
-                    updateField("Barcode", clean);
-                }
-                // 3. Check for Serial Number parameters (starts with VA)
-                else if (clean.startsWith("VA")) {
-                    updateField("Serial Number", clean);
-                }
-                // 4. Check for SID parameters (starts with P)
-                else if (clean.startsWith("P0")) {
-                    updateField("SID", clean);
-                }
+            currentProfileFields.forEach((field, idx) => {
+                container.innerHTML += `
+          <div class="text-left space-y-1">
+            <label class="text-xs font-bold text-gray-400 uppercase tracking-wider">${idx + 1}. ${field}</label>
+            <input type="text" 
+                   id="input-${idx}" 
+                   data-field="${field}" 
+                   data-index="${idx}"
+                   placeholder="Tap to scan or type ${field}..." 
+                   class="w-full p-3.5 bg-gray-50 border-2 border-gray-200 rounded-xl font-mono text-sm outline-none focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-500/10 transition"
+                   autocomplete="off">
+          </div>
+        `;
             });
 
-            document.getElementById("status-text").textContent = "Label Parsed! Review below.";
-            checkFormCompletion();
+            // Bind dynamic Keydown event listeners to every generated element input block
+            currentProfileFields.forEach((_, idx) => {
+                document.getElementById(`input-${idx}`).addEventListener("keydown", handleInputKeydown);
+            });
         }
 
-        function updateField(fieldName, value) {
-            currentDevicePayload[fieldName] = value;
-            const targetId = `meta-${fieldName.replace(/\s+/g, '-')}`;
-            const element = document.getElementById(targetId);
-            if (element) {
-                element.textContent = value;
-                element.className = "font-bold text-emerald-600 break-all pl-4 text-right";
+        function handleInputKeydown(e) {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                const value = e.target.value.trim();
+                const currentIdx = parseInt(e.target.dataset.index, 10);
+                const fieldName = e.target.dataset.field;
+
+                if (value === "") return;
+
+                // Save entry into data structure payload matrix
+                currentDevicePayload[fieldName] = value;
+
+                // Visual confirmation change style to green wrapper
+                e.target.classList.remove("border-gray-200", "focus:border-emerald-500");
+                e.target.classList.add("border-emerald-500", "bg-emerald-50/30", "text-emerald-700", "font-bold");
+
+                // Soft vibration response check
+                if (navigator.vibrate) navigator.vibrate(50);
+
+                // Move execution focus pointer forward to next text field index row item
+                const nextIdx = currentIdx + 1;
+                if (nextIdx < currentProfileFields.length) {
+                    focusFieldByIndex(nextIdx);
+                } else {
+                    // All configurations packed! Finalize write transaction sequence
+                    submitToGoogleSheets();
+                }
             }
         }
 
-        function checkFormCompletion() {
-            const required = ["Barcode", "IMEI 1", "IMEI 2", "Serial Number", "SID"];
-            const isComplete = required.every(field => currentDevicePayload[field]);
-
-            if (isComplete) {
-                submitToGoogleSheets();
+        function focusFieldByIndex(index) {
+            const targetInput = document.getElementById(`input-${index}`);
+            if (targetInput) {
+                targetInput.focus();
+                targetInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
         }
 
         async function submitToGoogleSheets() {
             document.getElementById("status-text").textContent = "Saving to Google Sheets...";
+            setFormInputsDisabled(true);
 
             try {
                 const response = await fetch(GOOGLE_API_URL, {
@@ -129,97 +116,78 @@
                     document.getElementById("progress-text").textContent = `${sessionSuccessCount} Devices`;
 
                     const log = document.getElementById("history-list");
-                    log.innerHTML = `<div class="py-2 text-gray-600 flex justify-between font-mono text-xs border-b border-gray-50"><span>✅ <b>${result.assetId}</b> [Sunmi V3]</span></div>` + log.innerHTML;
+                    log.innerHTML = `<div class="py-2 text-gray-600 flex justify-between font-mono text-xs border-b border-gray-50"><span>✅ <b>${result.assetId}</b> [${currentDevicePayload["Model"]}]</span></div>` + log.innerHTML;
 
-                    // Reset data structures cleanly for the next box label
-                    resetForm();
+                    // Flash page clean loop parameters immediately for subsequent box tags
+                    document.getElementById("status-text").textContent = "Saved Successfully!";
+                    setTimeout(() => {
+                        initiateWorkflow(document.getElementById("profile-selector").value);
+                        document.getElementById("status-text").textContent = "Ready for Next Box";
+                    }, 1000);
                 } else {
                     alert(result.message);
+                    setFormInputsDisabled(false);
                 }
             } catch (err) {
-                alert("Network Error Connecting to Spreadsheet Endpoint API.");
+                alert("Spreadsheet Connection Timeout Error.");
+                setFormInputsDisabled(false);
             }
         }
 
-        function resetForm() {
-            currentDevicePayload = { "Model": "Sunmi V3" };
-            document.getElementById("status-text").textContent = "Ready for Next Box";
-
-            const fields = ["Barcode", "IMEI-1", "IMEI-2", "Serial-Number", "SID"];
-            fields.forEach(f => {
-                const el = document.getElementById(`meta-${f}`);
-                if (el) {
-                    el.textContent = "Waiting...";
-                    el.className = "font-bold text-gray-400";
-                }
+        function setFormInputsDisabled(disabled) {
+            currentProfileFields.forEach((_, idx) => {
+                const input = document.getElementById(`input-${idx}`);
+                if (input) input.disabled = disabled;
             });
         }
 
         document.addEventListener("DOMContentLoaded", () => {
-            document.getElementById("photo-capture-input").addEventListener("change", handlePhotoCapture);
-            document.getElementById("btn-reset").addEventListener("click", resetForm);
+            document.getElementById("profile-selector").addEventListener("change", (e) => initiateWorkflow(e.target.value));
+            document.getElementById("btn-reset").addEventListener("click", () => initiateWorkflow(document.getElementById("profile-selector").value));
         });
     </script>
 
     <nav class="bg-emerald-600 text-white shadow-md p-4">
         <div class="max-w-md mx-auto flex justify-between items-center">
             <h1 class="font-bold text-lg">JG Asset Manager</h1>
-            <span class="text-xs bg-emerald-700 px-2 py-1 rounded">v3.0 - One-Shot Engine</span>
+            <span class="text-xs bg-emerald-700 px-2 py-1 rounded">v5.0 - Rapid Ingest</span>
         </div>
     </nav>
 
     <main class="max-w-md mx-auto p-4 space-y-6">
 
-        <div id="workflow-card" class="bg-white p-6 rounded-2xl shadow-xs border border-gray-100 text-center space-y-4">
+        <div class="bg-white p-5 rounded-2xl shadow-xs border border-gray-100">
+            <label class="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">Select Device
+                Profile</label>
+            <select id="profile-selector"
+                class="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500">
+                <option value="" disabled selected>— Choose Profile —</option>
+                <option value="Sunmi V3">Sunmi V3</option>
+                <option value="Android Phone">Android Phone</option>
+                <option value="Newland Scanner">Newland Scanner</option>
+            </select>
+        </div>
+
+        <div id="workflow-card"
+            class="bg-white p-6 rounded-2xl shadow-xs border border-gray-100 hidden text-center space-y-5">
             <div class="flex justify-between items-center text-sm">
                 <span class="text-gray-500 font-medium">Session Progress</span>
                 <span id="progress-text" class="text-emerald-600 font-bold">0 Devices</span>
             </div>
             <div>
-                <p class="text-xs uppercase tracking-widest text-gray-400 font-bold">Current Ingest Status</p>
-                <h2 id="status-text" class="text-xl font-black text-emerald-600 mt-1">Ready for Initial Label Snap</h2>
+                <p class="text-xs uppercase tracking-widest text-gray-400 font-bold">Workflow Controller Status</p>
+                <h2 id="status-text" class="text-base font-black text-emerald-600 mt-0.5">Ready for Next Box</h2>
             </div>
 
-            <label
-                class="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-5 rounded-xl font-black text-lg shadow-md transition flex items-center justify-center gap-2 cursor-pointer animate-pulse">
-                📸 SNAP FULL BOX LABEL
-                <input type="file" id="photo-capture-input" accept="image/*" capture="environment" class="hidden">
-            </label>
-
-            <div id="meta-display-grid" class="bg-gray-50 rounded-xl p-4 text-left space-y-2 border border-gray-100">
-                <div
-                    class="flex justify-between p-2 rounded bg-white border border-gray-100 shadow-2xs font-mono text-xs">
-                    <span class="text-gray-400">1. Barcode:</span>
-                    <span id="meta-Barcode" class="font-bold text-gray-400">Waiting...</span>
-                </div>
-                <div
-                    class="flex justify-between p-2 rounded bg-white border border-gray-100 shadow-2xs font-mono text-xs">
-                    <span class="text-gray-400">2. IMEI 1:</span>
-                    <span id="meta-IMEI-1" class="font-bold text-gray-400">Waiting...</span>
-                </div>
-                <div
-                    class="flex justify-between p-2 rounded bg-white border border-gray-100 shadow-2xs font-mono text-xs">
-                    <span class="text-gray-400">3. IMEI 2:</span>
-                    <span id="meta-IMEI-2" class="font-bold text-gray-400">Waiting...</span>
-                </div>
-                <div
-                    class="flex justify-between p-2 rounded bg-white border border-gray-100 shadow-2xs font-mono text-xs">
-                    <span class="text-gray-400">4. Serial Number:</span>
-                    <span id="meta-Serial-Number" class="font-bold text-gray-400">Waiting...</span>
-                </div>
-                <div
-                    class="flex justify-between p-2 rounded bg-white border border-gray-100 shadow-2xs font-mono text-xs">
-                    <span class="text-gray-400">5. SID:</span>
-                    <span id="meta-SID" class="font-bold text-gray-400">Waiting...</span>
-                </div>
+            <div id="dynamic-fields-container" class="space-y-4 pt-2 border-t border-gray-50">
             </div>
 
             <button id="btn-reset"
-                class="w-full bg-red-50 hover:bg-red-100 text-red-600 py-3 rounded-xl text-sm font-medium transition">🛑
-                Clear Active Matrix</button>
+                class="w-full bg-red-50 hover:bg-red-100 text-red-600 py-3 rounded-xl text-sm font-medium transition mt-2">🛑
+                Reset Current Entry Form</button>
         </div>
 
-        <div id="recent-scans-box" class="bg-white p-5 rounded-2xl shadow-xs border border-gray-100">
+        <div id="recent-scans-box" class="bg-white p-5 rounded-2xl shadow-xs border border-gray-100 hidden">
             <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Live Session Ingests</h3>
             <div id="history-list" class="divide-y divide-gray-50"></div>
         </div>
