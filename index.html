@@ -6,12 +6,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>JG Asset Manager</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://unpkg.com/@zxing/library@latest"></script>
 </head>
 
 <body class="bg-gray-50 text-gray-900 font-sans antialiased">
 
     <script>
-        // 🔗 YOUR DEPLOYED GOOGLE API URL
         const GOOGLE_API_URL = "https://script.google.com/a/macros/jayagrocer.com/s/AKfycbxzY_r1hKDCbSU2J03r2A2xPV9TNn7D7xL1QxK7a3l9jM_a3q2Y/exec";
 
         const profiles = {
@@ -21,88 +21,113 @@
         };
 
         let currentProfileFields = [];
+        let currentFieldIndex = 0;
         let currentDevicePayload = {};
         let sessionSuccessCount = 0;
+        let codeReader = null;
+        let isProcessingScan = false;
 
         function initiateWorkflow(profileName) {
             if (!profileName) return;
             currentProfileFields = profiles[profileName];
+            currentFieldIndex = 0;
             currentDevicePayload = { "Model": profileName };
 
-            buildDynamicFormFields();
+            buildMetadataGrid();
             document.getElementById("workflow-card").classList.remove("hidden");
             document.getElementById("recent-scans-box").classList.remove("hidden");
 
-            // Auto focus the very first text box instantly
-            setTimeout(() => focusFieldByIndex(0), 300);
+            advanceWorkflowStep();
         }
 
-        function buildDynamicFormFields() {
-            const container = document.getElementById("dynamic-fields-container");
-            container.innerHTML = "";
-
+        function buildMetadataGrid() {
+            const grid = document.getElementById("meta-display-grid");
+            grid.innerHTML = "";
+            grid.classList.remove("hidden");
             currentProfileFields.forEach((field, idx) => {
-                container.innerHTML += `
-          <div class="text-left space-y-1">
-            <label class="text-xs font-bold text-gray-400 uppercase tracking-wider">${idx + 1}. ${field}</label>
-            <input type="text" 
-                   id="input-${idx}" 
-                   data-field="${field}" 
-                   data-index="${idx}"
-                   placeholder="Tap to scan or type ${field}..." 
-                   class="w-full p-3.5 bg-gray-50 border-2 border-gray-200 rounded-xl font-mono text-sm outline-none focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-500/10 transition"
-                   autocomplete="off">
-          </div>
-        `;
-            });
-
-            // Bind dynamic Keydown event listeners to every generated element input block
-            currentProfileFields.forEach((_, idx) => {
-                document.getElementById(`input-${idx}`).addEventListener("keydown", handleInputKeydown);
+                grid.innerHTML += `
+          <div class="flex justify-between p-2.5 rounded bg-white border border-gray-100 shadow-2xs font-mono text-xs items-center">
+            <span class="text-gray-400 font-medium">${idx + 1}. ${field}:</span>
+            <span id="meta-${field.replace(/\s+/g, '-')}" class="font-bold text-gray-500 bg-gray-50 px-2 py-1 rounded">Waiting...</span>
+          </div>`;
             });
         }
 
-        function handleInputKeydown(e) {
-            if (e.key === "Enter") {
-                e.preventDefault();
-                const value = e.target.value.trim();
-                const currentIdx = parseInt(e.target.dataset.index, 10);
-                const fieldName = e.target.dataset.field;
+        function advanceWorkflowStep() {
+            if (currentFieldIndex < currentProfileFields.length) {
+                const targetField = currentProfileFields[currentFieldIndex];
+                document.getElementById("current-field-prompt").textContent = targetField;
 
-                if (value === "") return;
+                // Highlight active field in the checklist matrix box grid visually
+                currentProfileFields.forEach((field, idx) => {
+                    const targetId = `meta-${field.replace(/\s+/g, '-')}`;
+                    const el = document.getElementById(targetId);
+                    if (idx === currentFieldIndex) {
+                        el.className = "font-bold text-amber-600 bg-amber-50 border border-amber-200 px-2 py-1 rounded animate-pulse";
+                        el.textContent = "Scanning Now...";
+                    }
+                });
 
-                // Save entry into data structure payload matrix
-                currentDevicePayload[fieldName] = value;
-
-                // Visual confirmation change style to green wrapper
-                e.target.classList.remove("border-gray-200", "focus:border-emerald-500");
-                e.target.classList.add("border-emerald-500", "bg-emerald-50/30", "text-emerald-700", "font-bold");
-
-                // Soft vibration response check
-                if (navigator.vibrate) navigator.vibrate(50);
-
-                // Move execution focus pointer forward to next text field index row item
-                const nextIdx = currentIdx + 1;
-                if (nextIdx < currentProfileFields.length) {
-                    focusFieldByIndex(nextIdx);
-                } else {
-                    // All configurations packed! Finalize write transaction sequence
-                    submitToGoogleSheets();
-                }
+                isProcessingScan = false;
+                if (!codeReader) startCameraEngine();
+            } else {
+                stopCameraEngine();
+                submitToGoogleSheets();
             }
         }
 
-        function focusFieldByIndex(index) {
-            const targetInput = document.getElementById(`input-${index}`);
-            if (targetInput) {
-                targetInput.focus();
-                targetInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        function processInput(value) {
+            if (isProcessingScan) return;
+            isProcessingScan = true;
+
+            const activeField = currentProfileFields[currentFieldIndex];
+
+            // Stop duplicate logging inside the same transaction execution bundle run
+            if (Object.values(currentDevicePayload).includes(value)) {
+                isProcessingScan = false;
+                return;
+            }
+
+            currentDevicePayload[activeField] = value;
+
+            // Update targeted row UI state indicators
+            const targetId = `meta-${activeField.replace(/\s+/g, '-')}`;
+            const element = document.getElementById(targetId);
+            element.textContent = value;
+            element.className = "font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded break-all max-w-[60%] text-right";
+
+            if (navigator.vibrate) navigator.vibrate(80);
+            flashScannerViewfinder();
+
+            currentFieldIndex++;
+            // Cooldown timer window buffer so the operator can adjust focus to the next target barcode
+            setTimeout(advanceWorkflowStep, 1000);
+        }
+
+        function startCameraEngine() {
+            const videoContainer = document.getElementById("video-container");
+            videoContainer.classList.remove("hidden");
+
+            codeReader = new ZXing.BrowserMultiFormatReader();
+
+            // Bypass configurations to spin up native rear camera lenses explicitly on GitHub Pages contexts
+            codeReader.decodeFromConstraints({ video: { facingMode: "environment" } }, 'interactive-video', (result, err) => {
+                if (result && !isProcessingScan) {
+                    processInput(result.text.trim());
+                }
+            });
+        }
+
+        function stopCameraEngine() {
+            if (codeReader) {
+                codeReader.reset();
+                codeReader = null;
+                document.getElementById("video-container").classList.add("hidden");
             }
         }
 
         async function submitToGoogleSheets() {
-            document.getElementById("status-text").textContent = "Saving to Google Sheets...";
-            setFormInputsDisabled(true);
+            document.getElementById("current-field-prompt").textContent = "Saving to Google...";
 
             try {
                 const response = await fetch(GOOGLE_API_URL, {
@@ -116,41 +141,39 @@
                     document.getElementById("progress-text").textContent = `${sessionSuccessCount} Devices`;
 
                     const log = document.getElementById("history-list");
-                    log.innerHTML = `<div class="py-2 text-gray-600 flex justify-between font-mono text-xs border-b border-gray-50"><span>✅ <b>${result.assetId}</b> [${currentDevicePayload["Model"]}]</span></div>` + log.innerHTML;
+                    log.innerHTML = `<div class="py-2.5 text-gray-600 flex justify-between font-mono text-xs border-b border-gray-50"><span>✅ <b>${result.assetId}</b> [${currentDevicePayload["Model"]}]</span></div>` + log.innerHTML;
 
-                    // Flash page clean loop parameters immediately for subsequent box tags
-                    document.getElementById("status-text").textContent = "Saved Successfully!";
-                    setTimeout(() => {
-                        initiateWorkflow(document.getElementById("profile-selector").value);
-                        document.getElementById("status-text").textContent = "Ready for Next Box";
-                    }, 1000);
+                    initiateWorkflow(document.getElementById("profile-selector").value);
                 } else {
                     alert(result.message);
-                    setFormInputsDisabled(false);
+                    resetCurrentWorkflow();
                 }
             } catch (err) {
-                alert("Spreadsheet Connection Timeout Error.");
-                setFormInputsDisabled(false);
+                alert("Spreadsheet Connection Timeout.");
+                resetCurrentWorkflow();
             }
         }
 
-        function setFormInputsDisabled(disabled) {
-            currentProfileFields.forEach((_, idx) => {
-                const input = document.getElementById(`input-${idx}`);
-                if (input) input.disabled = disabled;
-            });
+        function resetCurrentWorkflow() {
+            initiateWorkflow(document.getElementById("profile-selector").value);
+        }
+
+        function flashScannerViewfinder() {
+            const v = document.getElementById("interactive-video");
+            v.classList.add("opacity-20", "brightness-150");
+            setTimeout(() => v.classList.remove("opacity-20", "brightness-150"), 150);
         }
 
         document.addEventListener("DOMContentLoaded", () => {
             document.getElementById("profile-selector").addEventListener("change", (e) => initiateWorkflow(e.target.value));
-            document.getElementById("btn-reset").addEventListener("click", () => initiateWorkflow(document.getElementById("profile-selector").value));
+            document.getElementById("btn-reset").addEventListener("click", resetCurrentWorkflow);
         });
     </script>
 
     <nav class="bg-emerald-600 text-white shadow-md p-4">
         <div class="max-w-md mx-auto flex justify-between items-center">
             <h1 class="font-bold text-lg">JG Asset Manager</h1>
-            <span class="text-xs bg-emerald-700 px-2 py-1 rounded">v5.0 - Rapid Ingest</span>
+            <span class="text-xs bg-emerald-700 px-2 py-1 rounded">v6.0 - Auto-Stream</span>
         </div>
     </nav>
 
@@ -174,17 +197,26 @@
                 <span class="text-gray-500 font-medium">Session Progress</span>
                 <span id="progress-text" class="text-emerald-600 font-bold">0 Devices</span>
             </div>
-            <div>
-                <p class="text-xs uppercase tracking-widest text-gray-400 font-bold">Workflow Controller Status</p>
-                <h2 id="status-text" class="text-base font-black text-emerald-600 mt-0.5">Ready for Next Box</h2>
+
+            <div class="bg-emerald-50/50 py-3 rounded-xl border border-emerald-100">
+                <p class="text-[10px] uppercase tracking-widest text-emerald-600 font-bold">Aim Viewfinder At</p>
+                <h2 id="current-field-prompt" class="text-2xl font-black text-emerald-700 mt-0.5">—</h2>
             </div>
 
-            <div id="dynamic-fields-container" class="space-y-4 pt-2 border-t border-gray-50">
+            <div id="video-container"
+                class="relative w-full aspect-video bg-black rounded-xl overflow-hidden hidden border-2 border-emerald-500/20 shadow-inner">
+                <video id="interactive-video" class="w-full h-full object-cover transition duration-150"></video>
+                <div
+                    class="absolute inset-0 border-4 border-dashed border-emerald-400/60 m-6 rounded pointer-events-none animate-pulse">
+                </div>
+            </div>
+
+            <div id="meta-display-grid" class="space-y-2 pt-2 border-t border-gray-100 hidden">
             </div>
 
             <button id="btn-reset"
-                class="w-full bg-red-50 hover:bg-red-100 text-red-600 py-3 rounded-xl text-sm font-medium transition mt-2">🛑
-                Reset Current Entry Form</button>
+                class="w-full bg-red-50 hover:bg-red-100 text-red-600 py-3 rounded-xl text-sm font-medium transition">🛑
+                Reset Workflow</button>
         </div>
 
         <div id="recent-scans-box" class="bg-white p-5 rounded-2xl shadow-xs border border-gray-100 hidden">
